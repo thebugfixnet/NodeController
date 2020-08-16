@@ -3,10 +3,10 @@ namespace NodeController {
     using UnityEngine;
     using KianCommons;
     using CSURUtil = Util.CSURUtil;
-    using CSUtil.Commons;
+    using TernaryBool = CSUtil.Commons.TernaryBool;
     using Log = KianCommons.Log;
-    using TrafficManager.Traffic.Impl;
-    using System.Drawing.Drawing2D;
+    using ColossalFramework.Math;
+    using KianCommons.Math;
 
     [Serializable]
     public class SegmentEndData {
@@ -35,7 +35,9 @@ namespace NodeController {
         public float CurveRaduis0;
         public int PedestrianLaneCount;
         public Vector3 CachedLeftCornerPos, CachedLeftCornerDir, CachedRightCornerPos, CachedRightCornerDir;// left and right is when you go away form junction
-        public Vector3 LeftCornerDir0, RightCornerDir0, LeftCornerPos0,RightCornerPos0;
+        public Vector3 LeftCornerDir0, RightCornerDir0, LeftCorner0, RightCorner0;
+        Bezier3 LeftBezier, CenterBezier, RightBezier;
+        float LeftBezierLength, CenterBezierLength, RightBezierLength; // left and right when going away from the node.
 
         // Configurable
         public float CornerOffset;
@@ -45,8 +47,8 @@ namespace NodeController {
         public bool NoJunctionTexture;
         public bool NoJunctionProps; // excluding TL
         public bool NoTLProps;
-        public Vector3 DeltaLeftCornerPos, DeltaLeftCornerDir, DeltaRightCornerPos, DeltaRightCornerDir; // left and right is when you go away form junction
-
+        public Vector3 DeltaLeftCornerPos, DeltaRightCornerPos;// left and right is when you go away form junction
+        public Vector2 LeftCornerRoation, RightCornerRoation;
 
         // shortcuts
         public ref NetSegment Segment => ref SegmentID.ToSegment();
@@ -73,8 +75,18 @@ namespace NodeController {
                 cornerPos: out CachedLeftCornerPos, cornerDirection: out CachedLeftCornerDir, out _);
             Segment.CalculateCorner(SegmentID, true, IsStartNode, leftSide: false,
                 cornerPos: out CachedRightCornerPos, cornerDirection: out CachedRightCornerDir, out _);
+            CalculateBeziers();
 
             Refresh();
+        }
+        public void CalculateBeziers() {
+            float hw = Segment.Info.m_halfWidth;
+            CenterBezier = SegmentID.ToSegment().CalculateSegmentBezier3(IsStartNode);
+            LeftBezier = CenterBezier.CalculateParallelBezier(hw, bLeft: true);
+            RightBezier = CenterBezier.CalculateParallelBezier(hw, bLeft: false);
+            CenterBezierLength = CenterBezier.ArcLength();
+            LeftBezierLength = LeftBezier.ArcLength();
+            RightBezierLength = RightBezier.ArcLength();
         }
 
         public bool IsDefault() {
@@ -150,25 +162,37 @@ namespace NodeController {
             Vector3 leftwardDir = -rightwardDir;
             Vector3 forwardDir = new Vector3(cornerDir.x, 0, cornerDir.z).normalized; // going away from the junction
 
-            Vector3 deltaPos;
-            Vector3 deltaDir;
-
             if (leftSide) {
-                deltaPos = TransformCoordinates(DeltaLeftCornerPos, leftwardDir, Vector3.up, forwardDir);
-                deltaDir = TransformCoordinates(DeltaLeftCornerDir, leftwardDir, Vector3.up, forwardDir);
+                cornerPos = Transform(DeltaLeftCornerPos, LeftBezier, leftSide, out Vector3 tangent, out Vector3 normal);
+                cornerDir +=  
             } else {
-                deltaPos = TransformCoordinates(DeltaRightCornerPos, rightwardDir, Vector3.up, forwardDir);
+                deltaPos = TransformCoordinates(DeltaRightCornerPos, RightBezier, Vector3.up, leftSide);
                 deltaDir = TransformCoordinates(DeltaRightCornerDir, rightwardDir, Vector3.up, forwardDir);
             }
-            cornerPos += deltaPos;
-            cornerDir += deltaDir;
+
         }
 
         /// <summary>
         /// tranforms input vector from relative (to x y x inputs) coordinate to absulute coodinate.
         /// </summary>
-        public static Vector3 TransformCoordinates(Vector3 v, Vector3 x, Vector3 y, Vector3 z) 
-            => v.x * x + v.y * y + v.z * z;
+        /// <param name="v">v.x=in the direction of normal to bezier
+        /// v.y=height
+        /// v.z=distance on the center bezier</param>
+        /// <param name="leftSide">left side going away from the junction</param>
+        public Vector3 Transform(Vector3 v, Bezier3 bezier, bool leftSide, out Vector3 tangent, out Vector3 normal) {
+            // z element: along the bezier.
+            float t = CenterBezier.Travel(0,v.z);
+            Vector3 ret = bezier.Position(t);
+
+            // y element: height
+            ret.y += v.y;
+
+            // x element: in the direction of normakl
+            bezier.NormalTangent(t, leftSide, out normal, out tangent);
+            ret += normal * v.x;
+
+            return ret;
+        }
 
         /// <returns>if position was changed</returns>
         public bool MoveLeftCornerToAbsolutePos(Vector3 pos) {
@@ -194,7 +218,7 @@ namespace NodeController {
             return ret;
         }
 
-        public static Vector3 ReverseTransformCoordinats(Vector3 v, Vector3 x, Vector3 y, Vector3 z) {
+        public static Vector3 ReverseTransformCoordinats(Vector3 v, Bezier3 bezier) {
             Vector3 ret = default;
             ret.x = Vector3.Dot(v, x);
             ret.y = Vector3.Dot(v, y);
